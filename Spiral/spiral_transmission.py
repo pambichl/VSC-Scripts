@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#jo Jorg
+
 import numpy as np
 from Scattering import scattering2D as scat
 from Utils_green import utils as ut
