@@ -1,0 +1,82 @@
+#!/usr/bin/env python
+
+import subprocess
+import sys
+import numpy as np
+import os
+import random
+
+if (len(sys.argv)!=6):
+    sys.exit("ABORT: parameters \nfilen, \n# of variations, \n# of configurations, \nstart radius [W], \nend radius [W] \nneeded")
+
+reffilen = str(sys.argv[1])   # namestring of calculation
+nr       = int(sys.argv[2])   # number of radius variations
+nconf    = int(sys.argv[3])   # number of configurations to be averaged over
+startr   = float(sys.argv[4]) # start radius in units of system width
+endr     = float(sys.argv[5]) # end radius in units of system width
+
+#Vorlageninput zeilenweise in ein array einlesen
+in_str  = open("input.xml", "r").readlines()
+out_str = [[open("input.%i.%i.xml" % (i,j), "w") for j in range(nconf)] for i in range(nr)]
+
+radii = np.linspace(startr,endr,nr)
+
+#Vorlageninput zeilenweise durchgehen und entsprechende Zeilen ersetzen
+for line in in_str:
+
+    line = line.strip() #entfernt alle trailing characters vorne und hinten
+
+    for i in range(nr):
+        for j in range(nconf):
+
+            if line.startswith('<param name="radius">'):
+                line_out = '<param name="radius">%.5f*$W</param>' % radii[i]
+                out_str[i][j].write(line_out)
+            elif line.startswith('<param name="file">av'):
+                line_out = '<param name="file">' + reffilen + '.%i.%i</param>' % (i,j)
+                out_str[i][j].write(line_out)
+            elif line.startswith('<param name="srand">'):
+                line_out = '<param name="srand">%i</param>' % random.randint(1,10000000)
+                out_str[i][j].write(line_out)
+            elif line.startswith('<param name="output">obstacles.dat'):
+                line_out = '<param name="output">obstacles.' + reffilen + '.%i.%i.dat</param>' % (i,j)
+                out_str[i][j].write(line_out)
+            elif line.startswith('<param name="file">obstacles.dat'):
+                line_out = '<param name="file">obstacles.' + reffilen + '.%i.%i.dat</param>' % (i,j)
+                out_str[i][j].write(line_out)
+            else:
+                line_out = line
+                out_str[i][j].write(line_out)
+
+            out_str[i][j].write("\n")
+
+for s in np.ravel(out_str):
+    s.close()
+
+#Submit-Skripts erstellen
+in_str = open("submit.sh", "r").readlines()
+out_str = [[open("submit.%i.%i.sh" % (i,j), "w") for j in range(nconf)] for i in range(nr)]
+
+for line in in_str:
+    line = line.strip()
+
+    for i in range(nr):
+        for j in range(nconf):
+
+            if 'mpirun' in line:
+                line = 'time mpirun -machinefile $TMPDIR/machines -np $NSLOTS solve_xml_mumps -i input.%i.%i.xml' % (i,j)
+                out_str[i][j].write(line)
+            else:
+                out_str[i][j].write(line)
+
+            out_str[i][j].write("\n")
+
+for s in np.ravel(out_str):
+    s.close()
+                
+#jobs ausfuehren         
+for i in range(nr):
+    for j in range(nconf):
+        pass
+        #subprocess.call(["qsub.py", "submit.%i.%i.sh" % (i,j)])
+

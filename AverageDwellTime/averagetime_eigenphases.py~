@@ -1,0 +1,355 @@
+#!/usr/bin/env python
+
+import numpy as np
+import scipy as sp
+import scipy.optimize as spopt
+import matplotlib.pyplot as plt
+import sys
+from math import pi as Pi
+
+import warnings
+import subprocess
+
+from Scattering import scattering2D as scat
+from Calc import fitfuncs as ff
+from Calc import transmission as trans
+from Calc import localization as local
+
+
+if (len(sys.argv)!=6):
+    sys.exit("ABORT: parameters filen, # of radius variations, # of configurations,  # of frequency variations, length of system [W] needed")
+
+filen = str(sys.argv[1]) # namestring of calculation
+nr    = int(sys.argv[2]) # number of radius variations
+nconf = int(sys.argv[3]) # number of configurations to be averaged over
+nfreq = int(sys.argv[4]) # number of frequency steps scanned over
+L = float(sys.argv[5]) # length of system in units of width
+
+data_direc = "../../VSC2/AverageDwellTime-20130618/" + filen + "/scatterdata/"
+
+energs = scat.read_S(data_direc, filen+".0.0")[2]
+if (len(energs)==0):
+    kmin = 3.1 * np.pi / 10.
+    kmax = 4.9 * np.pi / 10.
+    dk = 0.5 * (kmin+kmax) * 10**(-7)
+else:
+    kvals = np.sqrt(2*energs)
+    dk = (kvals[-1] - kvals[-3]) / 2.0
+
+#####
+k = 10.5 * np.pi / 10.
+dk = 0.5 * k * 10.**(-10)
+####
+
+dims = np.take(scat.read_S(data_direc, filen+".0.0")[1]/2, np.arange(1,3*nfreq,3))
+nin_max = np.max(dims)
+
+def read_single_S_list(filen, i, j):
+    filen_i = filen+".%i.%i" % (i,j)
+    print "reading file: "+filen_i
+    try:
+        data = scat.read_S(data_direc, filen_i)
+        return data
+    except Exception:
+        if 'problems' in globals():
+            problems.append(filen_i) 
+        print "WARNING: problem reading "+filen_i
+        return np.zeros((1, 3*nfreq, 2*nin_max, 2*nin_max), dtype='complex')
+
+problems = []
+S = np.array([[read_single_S_list(filen, i ,j)[0] for j in range(nconf)] for i in range(nr)])
+print 'WARNING: problems encountered in files', problems
+#for prob in problems:
+#    subprocess.call(["rm", data_direc+"Smat."+prob+".dat"])
+
+W = 10.0
+dy= W / 150.0
+dx = dy
+k_mat = []
+for w in range(nfreq):
+    energ = energs[3*w+1]
+    energs_y = 1./dy**2 * (1.-np.cos(np.arange(1,dims[w]+1,1)*np.pi/W*dy))
+    energs_x = energ - energs_y
+    k_x = np.arccos(1.-energs_x*dx**2)/dx
+    #k_x = np.sqrt(2*energ-(np.arange(1,dims[w]+1,1)*np.pi/W*dy)**2)
+    k_block = np.diag(1./k_x**2)
+    zero = np.zeros((dims[w],dims[w]), dtype="complex")
+    k_mat.append(np.bmat([[k_block, zero], [zero, k_block]]))
+
+#print k_mat[0]
+#print np.diag(k_mat[0])
+#print np.sqrt(2*energs[0]-(np.arange(1,dims[w]+1,1)*np.pi/W*dy)**2)
+
+
+conf_counter = nconf + np.zeros((nr, nfreq), dtype="int")
+herm_counter = 0
+def calc_q_mean(S_list, i, j):
+    '''
+    Calculates traces of Q operators of S matrices stored in S_list.
+    If imaginary part of the traces are too high, their value is set
+    to 0 and the number of configurations at this radius and frequency
+    is decremented by 1.
+    '''
+    global dims
+    global conf_counter
+    global herm_counter
+    
+    q_mean_list=[]
+    for w in range(nfreq):
+        s = S_list[i,j][3*w:3*w+3]
+        q_mean = np.trace(scat.calc_Q(s,dk)[0]) /(2*dims[w])
+        #q_mean = np.trace(scat.calc_Q(s,dk)[0] +
+        #                  1J/2. * (np.dot(s[1].T.conj(), k_mat[w]) - np.dot(k_mat[w], s[1]))) / (2*dims[w])
+                         
+        if (abs(q_mean.imag) > 10**(-0)):
+            q_mean = 0.0
+            conf_counter[i,w] -= 1
+            herm_counter += 1
+            #print i,w,conf_counter[i,w]
+        q_mean_list.append(q_mean)            
+    return q_mean_list
+
+q_mean  = np.array([[calc_q_mean(S,i,j) for j in range(nconf)] for i in range(nr)])
+print q_mean
+means   = np.array([[np.mean(q_mean[i,:,j].real) * nconf/max(conf_counter[i,j],1.0) for j in range(nfreq)] for i in range(nr)])
+stddevs = np.array([[np.std(q_mean[i,:,j].real)  for j in range(nfreq)] for i in range(nr)])
+meansIm = np.array([[np.mean(q_mean[i,:,j].imag) for j in range(nfreq)] for i in range(nr)])
+stddevsIm = np.array([[np.std(q_mean[i,:,j].imag)  for j in range(nfreq)] for i in range(nr)])
+print "number of non-unitary Q matrices: %i"%herm_counter
+
+
+t = trans.calc_t(S, dims, (nr,nfreq,nconf,nin_max))
+tdt_eigvals = trans.calc_tdt_eigvals(t, (nr,nfreq,nconf,nin_max))
+local.check_single_channel(tdt_eigvals, 10, (nr,nfreq,nconf))
+
+bins = np.array(50, dtype='float')
+# range of which ln(G) values are considered for histogram
+# must be < 0 otherwise error in localized fit
+ln_cond_range = (-12,np.log(0.999))
+# range out of which tdt-eigvals are considered for histogram
+# must not be smaller than this otherwise error in localized fit
+tdt_range = (0.15, 0.85)
+
+mean_vars = local.calc_localization_meas_I(t, dims, (nr,nfreq,nin_max))
+loc_var, cryst_hists = local.calc_localization_meas_II(tdt_eigvals, nr, bins)
+ln_cond, lognorm_hists = local.calc_localization_meas_III(tdt_eigvals, (nr,nfreq,nconf), bins, ln_cond_range)
+ 
+tdt_hists = local.calc_localization_meas_IV(tdt_eigvals, bins, tdt_range)
+tdt_log_hists = local.calc_localization_meas_IV(np.log10(tdt_eigvals), bins, tdt_range, log=True)
+
+
+### Plots ###
+
+
+plot_direc = "../../VSC2/AverageDwellTime-20130618/" + filen + "/"
+
+try:
+    obstacles = np.loadtxt(plot_direc + 'potential.dat', usecols=(1,))
+    obst_mask = abs(obstacles) == 0
+    obst_ratio = float(np.shape(obstacles[obst_mask])[0]) / float(np.shape(obstacles)[0])
+    print "filling factor of obstacles: %5f" % (1.0-obst_ratio)
+except:
+    obst_ratio = 0.94
+    print "WARNING: automatically assuming filling fraction to be 0.06"
+
+for mean, stddev, indx in zip(means, stddevs, range(nr)):
+
+    plt.errorbar(range(nfreq), mean, stddev, fmt='D-r', label=r'$\tau_{tot}$')
+
+    # Weyl estimate for dwell time: A / 2Pi = W * L * (1-fill) / 2Pi
+    Weyl = [10*L*10 * obst_ratio / (2*Pi)]*nfreq
+    plt.plot(range(nfreq), Weyl, '--g', label=r"$\rm{Weyl-estimate}$", lw=2.0)
+
+    mean_mean = np.mean(mean)
+    plt.plot(range(nfreq), [mean_mean]*nfreq, '--', color='orange', label=r"$\rm{mean}$", lw=2.0)
+    print "Weyl estimate, mean-value:", Weyl[0], mean_mean
+
+    plt.legend( bbox_to_anchor=(1.,1.) )
+    plt.title(r'average delay time for %i configurations at each $\omega$' % nconf)
+    plt.xlabel(r'$(\omega-\omega_{min})/\Delta\omega$')
+    plt.ylabel(r'$\left\langle \rm{Tr}\left( Q \right) \right\rangle$')
+    plt.ylim(0., 2*Weyl[0])
+    plt.savefig(plot_direc+"AverageTime."+filen+".%i.png" % indx, bbox_inches='tight')
+    plt.clf()
+ 
+for mean, stddev, indx in zip(meansIm, stddevsIm, range(nr)):
+
+    plt.errorbar(range(nfreq), mean, stddev, fmt='D-r', label=r'$\rm{Im}(\tau_{tot})$')
+
+    mean_mean = np.mean(mean)
+    plt.plot(range(nfreq), [mean_mean]*nfreq, '--', color='orange', label=r"$\rm{mean}$", lw=2.0)
+
+    plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+    #plt.ylim(-10**(-5),10**(-5))
+    plt.legend( bbox_to_anchor=(1.,1.) )
+    plt.title(r'Im of average delay time for %i conf. per $\omega$' % nconf)
+    plt.xlabel(r'$(\omega-\omega_{min})/\Delta\omega$')
+    plt.ylabel(r'$\rm{Im}(\left\langle \rm{Tr}\left( Q \right) \right\rangle$)')
+    plt.savefig(plot_direc+"AverageTimeIm."+filen+".%i.png" % indx, bbox_inches='tight')
+    plt.clf()
+
+for loc, indx in zip(mean_vars, range(nr)):
+
+    plt.plot(range(nfreq), loc, 'D-r', label=r'$\left\langle s_{ab} \right\rangle$')
+    plt.plot(range(nfreq), [7./3.]*nfreq, '--g', label=r'$7/3$')
+
+    plt.legend( bbox_to_anchor=(1.,1.) )
+    plt.title(r'$\left\langle s_{ab} \right\rangle$ measure for localization for %i configurations at each $\omega$' % nconf)
+    plt.xlabel(r'$(\omega-\omega_{min})/\Delta\omega$')
+    plt.ylabel(r'$\left\langle s_{ab} \right\rangle$')
+    plt.savefig(plot_direc+"Localization.I."+filen+".%i.png" % indx, bbox_inches='tight')
+    plt.clf()
+
+
+# for loc, hist, indx in zip(loc_var, cryst_hists, range(nr)):
+
+#     plt.plot(np.linspace(np.min(loc.real),np.max(loc.real),bins), hist.real, label=r'$N(x_n)$')
+
+#     plt.legend( bbox_to_anchor=(1.,1.) )
+#     plt.title(r'$x_n$-distribution measure for localization for %i configurations at %i frequencies'%(nconf,nfreq))
+#     plt.xlabel(r'$x_{n}$')
+#     plt.ylabel(r'$N(x_n)$')
+#     plt.savefig(plot_direc+"Localization.II."+filen+".%i.png" % indx, bbox_inches='tight')
+#     plt.clf()
+
+
+for loc, hist, indx in zip(ln_cond, lognorm_hists, range(nr)):
+
+    xvals = np.linspace(ln_cond_range[0],ln_cond_range[-1],bins).real
+    mean_lnG = np.mean(ln_cond[indx]).real
+    def localized_log_amp_only_wrap(T, a): return a * ff.localized_log_amp_only(T, mean_lnG)
+
+    # try:
+    #     x0, s, a = spopt.curve_fit(ff.gauss, xvals, hist.real)[0]
+    #     plt.plot(xvals, np.log10(ff.gauss(xvals, x0, s, a)), label=r'Gauss-fit')
+    #     print "xi Gauss III [L]: %5f" % (-2./x0)
+    # except RuntimeError:
+    #     print "WARNING: error in Gauss fit III with radius #%i"%indx
+    # try:
+    #     a, xi = spopt.curve_fit(ff.localized_log, np.exp(xvals), hist.real)[0]
+    #     plt.plot(xvals, np.log10(ff.localized_log(np.exp(xvals), a, xi)), label=r'Loc-fit')
+    #     print "fit xi III [L]: %5f" % xi
+    # except RuntimeError:
+    #     print "WARNING: error in Loc fit III with radius #%i"%indx
+    try:
+        a = spopt.curve_fit(localized_log_amp_only_wrap, np.exp(xvals), hist.real)[0]
+        plt.plot(xvals, np.log10(localized_log_amp_only_wrap(np.exp(xvals), a)+1), label=r'Loc-fit_amp_only')
+    except RuntimeError:
+        print "WARNING: error in Loc fit III with radius #%i"%indx
+
+    plt.plot(xvals, np.log10(hist.real+1), label=r'$\rm{log}(N(\rm{ln}\left(G_n\right)))$')
+ 
+
+    plt.legend( bbox_to_anchor=(1.45,1.) )
+    plt.title(r'$\rm{ln}\left(G_n\right)$-distribution measure for localization for %i configurations at %i frequencies'%(nconf,nfreq))
+    plt.xlabel(r'$\rm{ln}\left(G_n\right)$')
+    plt.ylabel(r'$\rm{log}N(\rm{ln}\left(G_n\right))$')
+    plt.ylim(0.,1.5*np.max(np.log10(hist.real+1)))
+    plt.savefig(plot_direc+"Localization.III."+filen+".%i.png" % indx, bbox_inches='tight')
+    plt.clf()
+
+
+for loc, hist, hist_log, indx in zip(tdt_eigvals, tdt_hists, tdt_log_hists, range(nr)):
+
+#     loc = np.sort(loc.flatten())
+#     tot_len = np.shape(loc)[0]
+
+#     cut_val = 0.0
+
+#     zero_mask = loc < cut_val
+#     cut_len_zero = np.shape(loc[zero_mask])[0] # number of values below threshold
+#     N_vals = 0
+#     bin_cutoff_zero = 0
+#     while(N_vals < cut_len_zero):
+#         N_vals += hist[bin_cutoff_zero]
+#         bin_cutoff_zero += 1
+#     zero_mask = loc > (1-cut_val)
+#     cut_len_one = np.shape(loc[zero_mask].flatten())[0] # number of values below threshold
+#     N_vals = 0
+#     bin_cutoff_one = 0
+#     while(N_vals < cut_len_one):
+#         N_vals += hist[-(bin_cutoff_one+1)]
+#         bin_cutoff_one += 1
+
+#     print "number of bins cut away at T=0 and T=1:", bin_cutoff_zero, bin_cutoff_one
+
+     xvals = np.linspace(tdt_range[0],tdt_range[-1],bins)
+    
+     try:
+         chaosamp = spopt.curve_fit(ff.chaotic, xvals, hist.real)[0]
+         plt.plot(xvals, ff.chaotic(xvals, chaosamp), label=r'chaotic-fit')#(%.3f)'%cut_val)
+     except RuntimeError:
+         print "WARNING: error in chaotic fit"
+
+#     x_logvals = np.linspace(np.log10(xvals[0]), np.log10(xvals[-1]), bins)
+#     fit_inds = np.arange(bin_cutoff_zero, bins-(bin_cutoff_one), dtype='int')
+#     mean_lnG = np.mean(ln_cond[indx]).real
+#     def localized_amp_only_wrap(T, a): return a * ff.localized_amp_only(T, mean_lnG)
+#     mean_lnT = np.mean(np.log(loc[cut_len_zero:tot_len-cut_len_one])).real
+#     #mean_lnT = np.mean(-np.log(loc)).real
+
+#     hist = np.array(hist, dtype='float')
+#     hist_log = np.array(hist_log, dtype='float')
+
+#     zero_hist_mask = hist_log == 0.0
+#     hist_log[zero_hist_mask] = 0.001
+#     zero_hist_mask = hist == 0.0
+#     hist[zero_hist_mask] = 0.001
+
+#     try:
+#         diffamp = spopt.curve_fit(ff.diffusive, xvals[fit_inds], hist.real[fit_inds])[0]
+#         plt.plot(xvals, ff.diffusive(xvals, diffamp), label=r'diffusive-fit(%.3f)'%cut_val)
+#     except RuntimeError:
+#         print "WARNING: error in diffusive fit"
+     # try:
+     #     chaosamp = spopt.curve_fit(ff.chaotic, xvals[fit_inds], hist.real[fit_inds])[0]
+     #     plt.plot(xvals, ff.chaotic(xvals, chaosamp), label=r'chaotic-fit(%.3f)'%cut_val)
+     # except RuntimeError:
+     #     print "WARNING: error in chaotic fit"
+#     try:
+#         locamp, xi = spopt.curve_fit(ff.localized, xvals[fit_inds], hist.real[fit_inds])[0]
+#         plt.plot(xvals, ff.localized(xvals, locamp, xi), label=r'single-channel-fit(%.3f)'%cut_val)
+#         print "fit xi IV, eff. xi (G) [L]: %5f, %5f" % (xi, -2./mean_lnG)
+#     except RuntimeError:
+#         print "WARNING: error in localized fit"
+#     try:
+#         locamp_only = spopt.curve_fit(localized_amp_only_wrap, xvals[fit_inds], hist.real[fit_inds])[0]
+#         plt.plot(xvals, ff.localized_amp_only(xvals, locamp_only), label=r'single-channel-fit(amp. only, %.3f)'%cut_val)
+#     except:
+#         print "WARNING: error in localized (amplitude only) fit"
+
+     plt.plot(xvals, hist.real, label=r'$N(T_n)$')
+     plt.legend( bbox_to_anchor=(-0.06,1.) )
+     plt.title(r'$T_n$-distribution for %i configurations at %i frequencies'%(nconf,nfreq))
+     plt.xlabel(r'$T_n$')
+     plt.ylabel(r'$N(T_n)$')
+     plt.xlim(0.0,1.0)
+     plt.ylim(0., np.mean(hist)*2.00)
+    #plt.ylim(0., np.mean(hist)*0.05)
+     plt.savefig(plot_direc+"Localization.IV."+filen+".%i.png" % indx, bbox_inches='tight')
+     plt.clf()
+
+#     try:
+#         loc_log_amp_only = spopt.curve_fit(localized_amp_only_wrap, 10**x_logvals, hist_log.real)[0]
+#         loc_log_amp, xi_log = spopt.curve_fit(ff.localized_log, 10**x_logvals, hist_log.real)[0]
+#         x0, s, a = spopt.curve_fit(ff.gauss, x_logvals, hist_log.real)[0]
+#         plt.plot(x_logvals, np.log10(localized_amp_only_wrap(10.**x_logvals, loc_log_amp_only)), label=r'loc-fit(amp-only)')
+#         plt.plot(x_logvals, np.log10(ff.localized_log(10.**x_logvals, loc_log_amp, xi_log)), label=r'loc-fit')
+#         plt.plot(x_logvals, np.log10(ff.gauss(x_logvals, x0, s, a)), label=r'gauss-fit')
+#         print "fit xi_log IV, xi_log Gauss [L]: %5f, %5f" % (xi_log, -2./x0)
+#     except RuntimeError:
+#         print "WARNING: error in localized (log, amplitude only) fit radius #%i"%indx
+
+#     plt.plot(x_logvals, np.log10(hist_log.real), label=r'$\rm{log}(N(\rm{log}(T_n)))$')
+#     plt.legend( bbox_to_anchor=(1.3,1.) )
+#     plt.ylim(0., np.mean(np.log10(hist_log))*2.00)
+#     plt.savefig(plot_direc+"Localization.IV.loglog."+filen+".%i.png" % indx, bbox_inches='tight')
+#     plt.clf()
+    
+
+        
+
+
+
+  
+
