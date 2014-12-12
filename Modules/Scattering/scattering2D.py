@@ -261,7 +261,6 @@ def calc_initial(vec, freqs, times, nx, ny, dy):
 
 #     return tau.real
 
-
 def calc_flux(E, d, dx):
     '''
     Calculate flux factors using correct dispersion
@@ -279,6 +278,4 @@ def calc_flux(E, d, dx):
 
     return kx
 
-        
-        
         

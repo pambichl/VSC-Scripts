@@ -105,5 +105,3 @@ plt.plot(calc_int_corr(outvec, i0), 'r')
 #plt.show()
 
 
-    
-
