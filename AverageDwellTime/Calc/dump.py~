@@ -1,0 +1,11 @@
+pht = np.array([[
+            phasetimes.calc_phase_times(S[i,j], dims, dk)
+            for j in range(nconf)] for i in range(nr)])
+pht_means = np.array([[
+            phasetimes.calc_phase_means(pht[i,j], dims)
+            for j in range(nconf)] for i in range(nr)])
+means_phase = np.mean(pht_means, axis=1)
+            
+
+#print pht[0,0]
+print means_phase / means

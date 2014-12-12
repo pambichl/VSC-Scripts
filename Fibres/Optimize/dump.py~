@@ -1,0 +1,14 @@
+
+### opt_movie ###
+
+# print 
+# print np.sum(Rc_w/Rc_w[0])
+# print np.einsum('w,w', olist[1:]**(-1.0), Rc_w[1:])
+# print np.einsum('w,w', olist, Rc_w)
+# print np.einsum('w,w', olist**1, Rc_w)
+# print np.einsum('w,w', olist**2, Rc_w)
+# print
+# print np.einsum('w,w', olist[1:]**(-1.0), Rc_w[1:]/Rc_w[0])
+# print np.einsum('w,w', olist, Rc_w/Rc_w[0])
+# print np.einsum('w,w', olist**1, Rc_w/Rc_w[0])
+# print np.einsum('w,w', olist**2, Rc_w/Rc_w[0])

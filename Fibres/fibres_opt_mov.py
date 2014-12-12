@@ -1,0 +1,283 @@
+#!/usr/bin/env python
+
+import numpy as np
+
+import matplotlib.pyplot as plt
+import subprocess
+import os
+from optparse import OptionParser
+
+from Utils import utils as ut
+from Scattering import scattering2D as scat
+
+from Packets import transmission as trans
+
+Pi = np.pi
+I = 0. + 1.J
+
+# read in time parameters from command line
+parser = OptionParser()
+parser.add_option("-a", "--tmax",
+                  action="store",
+                  type = "float",
+                  dest = "tmax")
+parser.add_option("-i", "--tmin",
+                  action="store",
+                  type = "float",
+                  dest = "tmin")
+parser.add_option("-n", "--timesteps",
+                  action="store",
+                  type = "float",
+                  dest = "tN")
+parser.add_option("-t", "--tag",
+                  action="store",
+                  type = "str",
+                  dest = "tag")
+parser.add_option("--auto",
+                  action="store",
+                  type = "int",
+                  dest = "auto")
+options = parser.parse_args()[0]
+tmax = options.tmax
+tmin = options.tmin
+tN = options.tN
+tag = options.tag
+auto = options.auto
+
+# read in input file
+# par = ut.read_input('.')
+# try:
+#    filen = par['filen']
+# except KeyError:
+#     raw_input("WARNING: parameter missing in pinput.dat")
+
+par = ut.read_xml()
+try:
+   filen = par['file']
+except KeyError:
+    raw_input("WARNING: parameter missing in Abmessung.xml")
+
+
+# read in data needed for time-dependent quantities
+try:
+   (
+      phi_full, # input envelope 
+      phit_full, # input envelope times transmission matrices
+      phat, # optimized input coefficients
+      t0, s, # average and standard deviation of input envelope
+      refpos, # index of frequency where PMs are calculated
+      varc_out, # variance of output
+      wlist, # list of frequencies
+      chi, # lead-mode basis
+      yvals # values of transverse coordinate in lead
+      ) = np.load("movie."+filen+"."+tag+".dat.npy")
+except:
+   raw_input("ERROR: data for movie not found")
+
+Dw = (wlist[4]-wlist[1]).real
+dw = (wlist[2]-wlist[1]).real
+w0 = wlist[3*refpos+1]
+
+if (not tmin): tmin = t0 - 10.0 * 1.0/(2.0*s)
+if (not tmax): tmax = 0.8 * 2.0 * Pi / Dw
+if (not tN and tN!=0): tN=300
+if (not tag): tag = ""
+
+dt = (tmax - tmin) / (tN - 1)
+tlist = np.linspace(tmin, tmax, tN)
+
+
+phi = phi_full[1::3]  
+Nphi = np.dot(phi.conj(), phi) * (wlist[4] - wlist[1])
+dphi = (phi_full[2::3] - phi_full[0::3]) / (2*dw)
+phit = phit_full[1::3]
+
+
+# output amplitudes in frequency space
+psi_full = np.einsum('wnm,m->wn', phit_full, phat)
+psi = psi_full[1::3]  
+dpsi = (psi_full[2::3] - psi_full[0::3]) / (2*dw)
+
+# time propagation phases
+phases = np.exp(-I * np.einsum('w,t->tw', wlist[1::3], tlist))
+
+# time-dependent input and output signals in coordinate space
+sigin = np.einsum('w,tw,wy->ty', phi, phases, np.einsum('wym,m', chi, phat)) * Dw / Nphi
+sigout = np.einsum('tw,wy->ty', phases, np.einsum('wym,wm->wy', chi, psi)) * Dw / Nphi
+
+# variances calculated from analytical formulae
+varc_in = s**2
+varc_out # is read in
+
+# variances calculated in frequency space
+tw_in = (-I) * np.dot(phi.conj(), dphi) / np.dot(phi.conj(), phi)
+tw_out = (-I) * np.einsum('wm,wm', psi.conj(), dpsi) / np.einsum('wm,wm', psi.conj(), psi)
+varw_in =  ( np.dot(dphi.conj(), dphi) / np.dot(phi.conj(), phi) 
+            - ((-I) * np.dot(phi.conj(), dphi) / np.dot(phi.conj(), phi))**2 )
+varw_out = ( np.einsum('wm,wm', dpsi.conj(), dpsi) / np.einsum('wm,wm', psi.conj(), psi)
+            - ((-I) * np.einsum('wm,wm', psi.conj(), dpsi) / np.einsum('wm,wm', psi.conj(), psi))**2 )
+
+# 1st and 2nd momenta of times of wave packets in time domain
+t_in = np.einsum('t,ty,ty', tlist, sigin.conj(), sigin) / np.sum(np.absolute(sigin)**2)
+t_out = np.einsum('t,ty,ty', tlist, sigout.conj(), sigout) / np.sum(np.absolute(sigout)**2)
+t2_in = np.einsum('t,ty,ty', tlist**2, sigin.conj(), sigin) / np.sum(np.absolute(sigin)**2)
+t2_out = np.einsum('t,ty,ty', tlist**2, sigout.conj(), sigout) / np.sum(np.absolute(sigout)**2)
+
+# variances of times in time domain
+vart_in = t2_in - t_in**2
+vart_out = t2_out - t_out**2
+
+# time-dependent input and output vectors and respective normalized and phase-fixed unit vectors
+phi_t = np.einsum('w,tw,m->tm', phi, phases, phat) * Dw / Nphi
+psi_t = np.einsum('tw,wm->tm', phases, psi) * Dw / Nphi
+phi_t_hat = np.einsum('tm,t,t->tm', phi_t, 1.0/np.array(map(np.linalg.norm, phi_t)), np.exp(-I*np.angle(phi_t[:,0])))
+psi_t_hat = np.einsum('tm,t,t->tm', psi_t, 1.0/np.array(map(np.linalg.norm, psi_t)), np.exp(-I*np.angle(psi_t[:,0])))
+#ATTENTION: dividing by phase of first component migh give rise
+#to numerical error if first component is zero (e.g. perfect lead)
+
+# mean input and output unit vectors and coefficient standard deviations
+mean_hat_in = np.einsum('tm,tn,tn->m', phi_t_hat, phi_t.conj(), phi_t) / np.sum(np.absolute(phi_t)**2)
+mean_hat_in = mean_hat_in / np.linalg.norm(mean_hat_in)
+mean_hat_out = np.einsum('tm,tn,tn->m', psi_t_hat, psi_t.conj(), psi_t) / np.sum(np.absolute(psi_t)**2)
+mean_hat_out = mean_hat_out / np.linalg.norm(mean_hat_out)
+vart_coeff_in = np.einsum('t,tn,tn',
+                          np.array(map(np.linalg.norm, phi_t_hat - mean_hat_in))**2, phi_t.conj(), phi_t) / np.sum(np.absolute(phi_t)**2)
+vart_coeff_out = np.einsum('t,tn,tn',
+                           np.array(map(np.linalg.norm, psi_t_hat - mean_hat_out))**2, psi_t.conj(), psi_t) / np.sum(np.absolute(psi_t)**2)
+
+# spectral correlation functions for input and output signals
+print "Calculating spectral autocorrelation function"
+wN = np.shape(psi)[0]
+olist = np.arange(wN) * Dw
+r_in = np.zeros((wN,), dtype='complex')
+r_out = np.zeros((wN,), dtype='complex')
+r_in[0] = np.einsum('w,w', phi.conj(), phi) * Dw
+r_out[0] = np.einsum('wm,wm', psi.conj(), psi) * Dw
+for o in (1+np.arange(wN-1)):
+   r_in[o] = np.einsum('w,w', phi[:-o].conj(), phi[o:]) * Dw
+   r_out[o] = np.einsum('wm,wm', psi[:-o].conj(), psi[o:]) * Dw
+   
+R_in = np.abs(r_in)**2
+R_out = np.abs(r_out)**2
+dev = np.sum(np.abs(R_out/R_out[0] - R_in/R_in[0])**2) * Dw
+
+
+print
+print "recurrence time = %f" % (2.0*np.pi/Dw)
+if (tmax-tmin > 2.0*np.pi/Dw):
+   print "WARNING: chosen time interval longer than recurrence time" 
+print "sigma_in = %f" % np.sqrt(vart_in.real)
+print "sigma_c,in = %f" % np.sqrt(vart_coeff_in.real)
+print "sigma_out = %f" % np.sqrt(vart_out.real)
+print "sigma_c,out = %f" % np.sqrt(vart_coeff_out.real)
+print
+print "sigma_in (an.,w:real,w:abs,t): ", np.sqrt(varc_in).real, np.sqrt(varw_in.real), np.sqrt(np.abs(varw_in)), np.sqrt(vart_in).real
+print "sigma_out (an.,w:real,w:abs,t): ", np.sqrt(varc_out).real, np.sqrt(varw_out.real), np.sqrt(np.abs(varw_out)), np.sqrt(vart_out).real
+print "<t_in>: ", tw_in
+print "<t_out>: ", tw_out
+print
+
+
+### frames and movie ###
+
+
+if (not os.path.isdir("./movie")):
+   subprocess.call(["mkdir", "movie"])
+
+
+tN = len(tlist)
+
+for i, t in enumerate(tlist):
+   
+   print "Producing Frame %i of %i" % (i+1,tN)
+
+   plt.figure(figsize=(20.5,5))
+   plt.suptitle(r"time $t = %f$, " % t + "\t" + 
+                r"$\sigma_{out}^2-\sigma_{in}^2 = %f$"
+                % (vart_out.real - vart_in.real) + "\t" + 
+                r"$\sigma_{c,out}^2-\sigma_{c,in}^2 = %f$,  "
+                % (vart_coeff_out.real - vart_coeff_in.real))
+
+   plt.subplot2grid((1,3),(0,0))
+   plt.figtext(0.125, 0.06,
+            r"$\left\langle t_{in} \right\rangle = %f$,  " % t_in.real +
+            r"$\sigma_{in} = %f$,  " % np.sqrt(vart_in.real) + 
+ 
+            r"$\sigma_{c,in} = %f$" % np.sqrt(vart_coeff_in.real))
+   plt.xlim(0.0, 1.0)
+   plt.ylim(0.0, np.max(np.absolute(sigin)**2))
+   plt.plot(yvals, np.absolute(sigin[i])**2, color="green")
+
+   plt.subplot2grid((1,3),(0,1))
+   plt.figtext(0.4, 0.06,
+               r"$\left\langle t_{out} \right\rangle = %f$,  " % t_out.real +
+               r"$\sigma_{out} = %f$,  " % np.sqrt(vart_out.real) +
+               r"$\sigma_{c,out} = %f$,  " % np.sqrt(vart_coeff_out.real))
+   plt.xlim(0.0, 1.0)
+   plt.ylim(0.0, np.max(np.absolute(sigout)**2))
+   plt.plot(yvals, np.absolute(sigout[i])**2, color="blue")
+
+   plt.subplot2grid((1,3),(0,2))
+   plt.figtext(0.675, 0.06,
+               r"$\int \, do \, \left( R_{out}(o) - R_{in}(o) \right)^2$ = %4.20f" % dev)
+   plt.xlim(0, 0.2*s)
+   plt.plot(olist, R_in/R_in[0], color="green")
+   plt.plot(olist, R_out/R_out[0], color="blue")
+
+   plt.subplots_adjust(bottom=0.2, wspace=0.4)
+
+   plt.savefig("movie/input."+filen+"."+tag+".%04i.jpg" % i)
+   plt.clf()
+
+
+
+if (tN!=0):
+   print "Producing Movie"
+   subprocess.call(["mencoder",
+                    "mf://./movie/*."+tag+"*.jpg",
+                    "-mf", "w=800:h=600:fps=%f:type=jpg" % (tN/15.0),
+                    "-ovc", "lavc",
+                    "-of", "avi",
+                    "-o", "movie."+filen+"."+tag+".avi"])
+
+
+### orientation of output vector ###
+psi_norm_mask = np.array(map(np.linalg.norm, psi_full)) != 0
+psi_hat = np.absolute(np.einsum('wn,w->wn', psi_full[psi_norm_mask], 1.0/np.array(map(np.linalg.norm, psi_full))[psi_norm_mask]))
+
+for coeff in psi_hat.T:
+   plt.plot(wlist[psi_norm_mask], coeff, '-d')
+   plt.plot(wlist[psi_norm_mask], np.abs(phi_full[psi_norm_mask]/np.max(phi_full[psi_norm_mask]))**2, '-D')
+plt.title(r"$\omega_{min} =$" + "%f, " % wlist[1::3][0] +
+          r"$\omega_{max} =$" + "%f, " % wlist[1::3][-1] +
+          r"$\omega_0 =$" + "%f, " % w0 + 
+          r"$\sigma^{\omega}_{in} = \left(2 \, \sigma_{in} \right)^{-1}=$" + "%f" % (1.0/(2.0*s)))
+plt.figtext(0.1, 0.03,
+            r"$\sigma_{in}$" + " = %f \t" % np.sqrt(varw_in.real) +
+            r"$\sigma_{out}$" + " = %f" % np.sqrt(varw_out.real))
+plt.vlines(w0,0.0,1.0, color='green', linestyle='solid')
+lo_lim = max(wlist[1], w0 - 3.0*1.0/(2.0*s))
+up_lim = min(wlist[-2], w0 + 3.0*1.0/(2.0*s))
+plt.ylim(0.0,1.0)
+plt.xlim(lo_lim, up_lim)
+plt.savefig("coeff."+tag+".jpg")
+#plt.show()
+
+print
+print "sigma_long_in = %6f" % np.sqrt(vart_in.real)
+print "sigma_long_out = %6f" % np.sqrt(vart_out.real)
+print "sigma_coeff_in = %6f" % np.sqrt(vart_coeff_in.real)
+print "sigma__coeff_out = %6f" % np.sqrt(vart_coeff_out.real)
+print
+
+
+
+if (auto):
+   if (not os.path.exists(filen+".opt.log")):
+      with open(filen+".opt.log", "w") as fstream:
+         fstream.write(" %6f\n" % (vart_out.real - vart_in.real))
+   else:
+      with open(filen+".opt.log", "a") as fstream:
+         fstream.write(" %6f\n" % (vart_out.real - vart_in.real))
+      
+

@@ -1,0 +1,162 @@
+#!/usr/bin/env python
+
+import numpy as np
+#import scipy.sparse as sps
+#import scipy.sparse.linalg as spsl
+#from cmath import *
+import matplotlib.pyplot as plt
+#import sys
+import subprocess
+import os
+from optparse import OptionParser
+
+#import pickle
+
+from Utils import utils as ut
+from Scattering import scattering2D as scat
+
+from Packets import transmission as trans
+
+Pi = np.pi
+I = 0. + 1.J
+
+
+# read in input file
+par = ut.read_input('.')
+try:
+   filen = par['filen']
+except KeyError:
+    raw_input("WARNING: parameter missing in pinput.dat")
+
+
+# read in data needed for time-dependent quantities
+try:
+   (
+      phi_full, # input envelope 
+      phit_full, # input envelope times transmission matrices
+      phat, # optimized input coefficients
+      t0, s, # average and standard deviation of input envelope
+      varc_out, # variance of output
+      wlist, # list of frequencies
+      chi, # lead-mode basis
+      yvals # values of transverse coordinate in lead
+      ) = np.load("movie."+filen+".dat.npy")
+except:
+   raw_input("ERROR: data for movie not found")
+
+Dw = (wlist[4]-wlist[1]).real
+dw = 0.5*(wlist[2]-wlist[1]).real
+
+phi = phi_full[1::3]  
+Nphi = np.dot(phi.conj(), phi) * (wlist[4] - wlist[1])
+dphi = (phi_full[2::3] - phi_full[0::3]) / (2*dw)
+
+
+# read in time parameters from command line
+parser = OptionParser()
+parser.add_option("-a", "--tmax",
+                  action="store",
+                  type = "float",
+                  dest = "tmax")
+parser.add_option("-i", "--tmin",
+                  action="store",
+                  type = "float",
+                  dest = "tmin")
+parser.add_option("-n", "--timesteps",
+                  action="store",
+                  type = "float",
+                  dest = "tN")
+parser.add_option("-t", "--tag",
+                  action="store",
+                  type = "str",
+                  dest = "tag")
+options = parser.parse_args()[0]
+tmax = options.tmax
+tmin = options.tmin
+tN = options.tN
+tag = options.tag
+if (not tmin): tmin = t0 - 10.0 * 1.0/(2.0*s)
+if (not tmax): tmax = 0.8 * 2.0 * Pi / Dw
+if (not tN): tN=300
+if (not tag): tag = ""
+
+        
+dt = (tmax - tmin) / (tN - 1)
+tlist = np.linspace(tmin, tmax, tN)
+
+
+# output amplitudes in frequency space
+psi_full = np.einsum('ijk,k', phit_full, phat)
+psi = psi_full[1::3]  
+dpsi = (psi_full[2::3] - psi_full[0::3]) / (2*dw)
+
+# time propagation phases
+phases = np.exp(-I * np.einsum('w,t->tw', wlist[1::3], tlist))
+
+# time-dependent input signal
+sigin = np.einsum('w,tw,wy->ty', phi, phases, np.einsum('wym,m', chi, phat)) * Dw / Nphi
+# time-dependent output signal
+sigout = np.einsum('w,tw,wy->ty', phi, phases, np.einsum('wym,wm->wy', chi, psi)) * Dw / Nphi
+
+# variances calculated from analytical formulae
+varc_in = 1./(2.*s**2)
+varc_out # is read in
+
+# variances calculated in frequency space
+varw_in = np.dot(dphi.conj(), dphi) * Dw / Nphi - ((-I) * np.dot(phi.conj(), dphi) * Dw / Nphi)**2
+varw_out = np.einsum('wy,wy', dpsi.conj(), dpsi) * Dw / Nphi - ((-I) * np.einsum('wy,wy', psi.conj(), dpsi) * Dw / Nphi)**2
+
+# 1st and 2nd momenta for wave packets in time domain
+t_in = np.einsum('t,ty,ty', tlist, sigin.conj(), sigin) / np.sum(np.absolute(sigin)**2)
+t_out = np.einsum('t,ty,ty', tlist, sigout.conj(), sigout) / np.sum(np.absolute(sigout)**2)
+t2_in = np.einsum('t,ty,ty', tlist**2, sigin.conj(), sigin) / np.sum(np.absolute(sigin)**2)
+t2_out = np.einsum('t,ty,ty', tlist**2, sigout.conj(), sigout) / np.sum(np.absolute(sigout)**2)
+
+# variances in time domain
+vart_in = t2_in - t_in**2
+vart_out = t2_out - t_out**2
+
+
+### frames and movie ###
+
+
+if (not os.path.isdir("./movie")):
+   subprocess.call(["mkdir", "movie"])
+
+
+tN = len(tlist)
+
+for i, t in enumerate(tlist):
+   
+   print "Producing Frame %i of %i" % (i+1,tN)
+
+   plt.figure(figsize=(15,5))
+   plt.suptitle(r"time $t = %f$" % t)
+
+   plt.subplot2grid((1,2),(0,0))
+   plt.title(r"$\left\langle t_{in} \right\rangle = %f$, " % t_in.real +
+             r"$\sigma_{in} = %f$" % np.sqrt(vart_in.real))
+   plt.xlim(0.0, 1.0)
+   plt.ylim(0.0, np.max(np.absolute(sigin)**2))
+   plt.plot(yvals, np.absolute(sigin[i])**2)
+
+   plt.subplot2grid((1,2),(0,1))
+   plt.title(r"$\left\langle t_{out} \right\rangle = %f$, " % t_out.real +
+             r"$\sigma_{out} = %f$" % np.sqrt(vart_out.real))
+   plt.xlim(0.0, 1.0)
+   plt.ylim(0.0, np.max(np.absolute(sigout)**2))
+   plt.plot(yvals, np.absolute(sigout[i])**2)
+
+   plt.savefig("movie/input."+filen+"."+tag+".%04i.jpg" % i)
+   plt.clf()
+
+
+print "Producing Movie"
+subprocess.call(["mencoder",
+                 "mf://./movie/*"+tag+"*.jpg",
+                 "-mf", "w=800:h=600:fps=%f:type=jpg" % (tN/15.0),
+                 "-ovc", "lavc",
+                 "-of", "avi",
+                 "-o", "movie."+filen+"."+tag+".avi"])
+
+

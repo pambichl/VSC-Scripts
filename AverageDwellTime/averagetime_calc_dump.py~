@@ -1,0 +1,49 @@
+# S0 = scat.read_S(data_direc, filen+"_clean")[0]
+# q0 = calc_q_mean( np.array([[S0]]), 0, 0)
+# print np.shape(q0)
+
+
+def theta_function(x):
+    '''Heaviside-Theta function.'''
+    if x == 0:
+        return 0.5
+    elif x < 0:
+        return 0.0
+    else:
+        return 1.0
+
+def ballistic_time(k,n):
+    '''Analytical expression for n-th delay time
+    for perfect (empty) waveguide.'''
+    global L
+    ky = n*np.pi/10.0
+    time = L * 10.0 * k / np.sqrt(np.abs(k**2 - ky**2)) * theta_function(k-ky)
+    return time
+
+def ballistic_TrQ(k):
+    '''Analytical expression for trace of Q-operator
+    for perfect (empty) waveguide.'''
+    Tr = 0.0
+    for n in np.arange(1,15):
+        Tr += ballistic_time(k,n)
+    return 2.0*Tr
+
+
+    ### values of actual calculations W = 10, L = 2.5 *W, nx = L/dx, ny = 14.9*10, pphwl = 10
+    nx = 375; ny = 149; dx = 0.0666666666; ATot = nx*(ny+1)*dx**2
+    AObst = ATot * (1.0-obst_ratio)
+    ARem  = ATot * obst_ratio
+    radii = np.array((0.015*10., 0.060*10.), dtype="float") # used sizes of obstacles r=0.015*W, r=0.060*W
+    NObst = np.array(0.06*ATot / (np.pi*radii**2.), dtype="int") # number of obstacles, obst_ratio = 0.06 analytically
+    BObst = NObst * 2. * radii * np.pi # surface of obstacles
+    ### estimate for prefactor for correction of surface of obstacles
+    #BPref = np.array( ( (12*0.0666666 / (2*radii[0]*np.pi)), 1.0 ) )
+    BEff = BObst[indx] + 2.0 * nx * dx * L - 2.0 * (ny+1) * dx
+    
+    Weyl = (ARem * kvals / (2.0)
+            - 1.0 * BObst[indx]/(2.0)
+            - 2.*10.*L/(2.0)
+            + 2.*10./(2.0))
+
+    DOS = ARem * kvals / (2.0 * np.pi) - BEff / (4.0 * np.pi)
+    Time = 2.0 * np.pi * DOS
